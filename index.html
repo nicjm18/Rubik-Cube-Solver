@@ -26,24 +26,26 @@
           </div>
 
           <div class="camera" id="camera">
-            <div class="mirror">
+            <div class="mirror flip" id="mirror-wrap">
               <video id="video" playsinline muted></video>
               <canvas id="overlay"></canvas>
             </div>
             <div class="camera-off" id="camera-off">
-              <p>Show each face of your cube to the camera, filling the 3×3 grid.</p>
+              <p>Show the faces of your cube to the camera, one by one, in any order. They are captured automatically.</p>
               <button class="btn primary" id="start-camera">Turn on camera</button>
               <p id="camera-error" class="error" hidden></p>
             </div>
           </div>
 
           <div class="instruction" id="scan-instruction"></div>
+          <p class="live-status" id="live-status" hidden></p>
 
           <div class="row">
-            <button class="btn primary grow" id="capture" disabled>Capture face <kbd>Space</kbd></button>
+            <button class="btn grow" id="capture" disabled>Capture now <kbd>Space</kbd></button>
           </div>
 
           <div class="faces" id="faces"></div>
+          <p class="camera-mode muted" id="camera-mode" hidden></p>
 
           <div class="row small-links">
             <button class="link" id="demo">Try a random scramble</button>

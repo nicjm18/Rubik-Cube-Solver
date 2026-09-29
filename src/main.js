@@ -1,7 +1,8 @@
 import { Cube3D, PALETTE, UNKNOWN_COLOR } from './cube3d.js';
 import { Scanner, classify, colorFeatures, featureDist } from './scanner.js';
+import { assembleFaces, rotateGrid, mirrorGrid } from './assemble.js';
 import {
-  FACES, SOLVED, validate, findScanFixes, scanTransformSources, relabelFor, applyAlg, parseAlg, parseMove, invertMove, randomScramble,
+  FACES, SOLVED, validate, scanTransformSources, relabelFor, applyAlg, parseAlg, parseMove, invertMove, randomScramble,
 } from './cubeModel.js';
 
 const $ = (id) => document.getElementById(id);
@@ -16,36 +17,20 @@ const REFERENCE_RGB = {
   yellow: [220, 215, 40], orange: [240, 110, 30], blue: [25, 70, 190],
 };
 
+// Live capture tuning
+const HOLD_MS = 800; // how long a face must be held still to be captured
+const MIN_UNIFORM = 0.6; // each cell must be mostly one color...
+const MIN_BRIGHTNESS = 35; // ...and not too dark
+const STEADY_DIST = 12 ** 2; // max color change per cell between frames while "still"
+const SAME_FACE_DIST = 25 ** 2; // center colors closer than this are the same face
+
+const MIRROR_KEY = 'cubeSolver.cameraMirrored';
+
 const hex = (f) => (f === '?' ? UNKNOWN_COLOR : PALETTE[state.faceColor[f]]);
 const sw = (f) => `<span class="swatch" style="background:${hex(f)}"></span>`;
 const col = (f) => `${sw(f)}<b>${state.faceColor[f].toUpperCase()}</b>`;
 const known = (f) => !!state.samples[f] || !!state.colorFixes[f] || state.manualColors;
-
-// Scanning follows how the cube is moved, not its colors, so any color scheme works
-// (many keychain and off-brand cubes use a non-standard one).
-// The resulting sticker order matches the solver's conventions.
-const SCAN_STEPS = [
-  {
-    face: 'F',
-    text: () => 'Pick any face to be the <b>front</b> and show it to the camera. ' +
-      'Remember which face is on <b>top</b> — keep it on top for the next 3 faces.',
-  },
-  {
-    face: 'R',
-    text: () => 'Turn the whole cube a quarter turn so the face that was on its <b>right</b> side now faces the camera. Same face on top.',
-  },
-  { face: 'B', text: () => 'Again: bring the face on the <b>right</b> side to the camera. Same face on top.' },
-  { face: 'L', text: () => 'Once more: bring the face on the <b>right</b> side to the camera. Same face on top.' },
-  {
-    face: 'U',
-    text: () => `Turn once more the same way so the first face${known('F') ? ` (${col('F')} center)` : ''} is in front again. ` +
-      'Then tilt the cube <b>toward you</b>: the top face looks at the camera and the first face points <b>down</b>.',
-  },
-  {
-    face: 'D',
-    text: () => `Now show the <b>bottom</b> face: it looks at the camera and the first face${known('F') ? ` (${col('F')} center)` : ''} points <b>up</b>.`,
-  },
-];
+const rgbCss = ([r, g, b]) => `rgb(${r},${g},${b})`;
 
 const MOVE_TEXT = {
   U: ['Turn the <b>top</b> layer to the <b>left</b>', 'clockwise, seen from above'],
@@ -73,20 +58,36 @@ function describeMove(m) {
 
 // ---- State ------------------------------------------------------------------
 
+function loadMirrored() {
+  try {
+    const v = localStorage.getItem(MIRROR_KEY);
+    return v === 'true' ? true : v === 'false' ? false : null;
+  } catch {
+    return null;
+  }
+}
+
 const state = {
   phase: 'scan', // 'scan' | 'solve'
-  samples: {}, // face -> 9 RGB samples
+  liveFaces: [], // faces captured by the camera, in order: { colors: 9 RGB, raw camera orientation }
+  assembly: null, // result of putting the 6 faces together
+  samples: {}, // position (URFDLB) -> 9 RGB samples, once positions are known
   overrides: {}, // facelet index -> letter (manual fixes)
   facelets: '',
   faceColor: { ...STANDARD_SCHEME }, // face -> color name, detected from the centers
   colorFixes: {}, // face -> color name chosen by hand for a center
   manualColors: false, // colors entered without the camera (demo)
-  scanStep: 0,
+  mirrored: loadMirrored(), // does the camera send a mirrored image? null = not known yet
+  askSide: false, // ask the one-time "which color is on the right" question
+  checking: false, // camera direction check running
+  checkNote: '',
+  liveStatus: '',
   paint: 'U',
   solution: [],
   step: 0,
   playing: null,
 };
+const hold = { prev: null, since: null };
 
 const cube = new Cube3D($('viewport'));
 const scanner = new Scanner($('video'), $('overlay'));
@@ -123,11 +124,17 @@ function requestSolve(facelets) {
   worker.postMessage({ id: Date.now(), facelets });
 }
 
-// ---- Facelets from samples ------------------------------------------------
+// ---- Colors and facelets --------------------------------------------------
 
 const permutations = (a) =>
   a.length <= 1 ? [a] : a.flatMap((x, i) => permutations([...a.slice(0, i), ...a.slice(i + 1)]).map((p) => [x, ...p]));
 const ALL_ASSIGNMENTS = permutations(COLOR_NAMES);
+
+function nearestColorName(rgb) {
+  const v = colorFeatures(rgb);
+  return COLOR_NAMES.reduce((best, name) =>
+    featureDist(v, colorFeatures(REFERENCE_RGB[name])) < featureDist(v, colorFeatures(REFERENCE_RGB[best])) ? name : best);
+}
 
 /** Decides which display color each face gets, from the scanned center colors. */
 function computeFaceColors() {
@@ -182,6 +189,7 @@ function computeFacelets() {
 function refresh({ redraw3d = true } = {}) {
   computeFacelets();
   if (redraw3d && state.phase === 'scan') cube.setState(state.facelets);
+  cube.controls.autoRotate = state.phase === 'scan' && !state.assembly && !state.manualColors;
   renderPalette();
   renderFaces();
   renderNet();
@@ -189,79 +197,253 @@ function refresh({ redraw3d = true } = {}) {
   updateValidation();
 }
 
-// ---- Scan UI --------------------------------------------------------------
+// ---- Live scanning --------------------------------------------------------
 
-function renderInstruction() {
-  const done = FACES.filter((f) => state.samples[f]).length;
-  $('scan-progress').textContent = `${done} / 6`;
-  if (state.scanStep >= SCAN_STEPS.length) {
-    $('scan-instruction').innerHTML = 'All faces captured! Check the colors below, then press <b>Solve it</b>. Click a face above to re-scan it.';
-    $('capture').disabled = true;
-  } else {
-    const s = SCAN_STEPS[state.scanStep];
-    $('scan-instruction').innerHTML = s.text();
-    $('capture').disabled = !scanner.running;
+/** A captured face as it really looks (undoing a mirrored camera image). */
+const trueGrid = (face) => (state.mirrored ? mirrorGrid(face.colors) : face.colors);
+
+/** Index of an already captured face with the same center color, or -1. */
+function findSameFace(colors) {
+  const v = colorFeatures(colors[4]);
+  return state.liveFaces.findIndex((f) => featureDist(v, colorFeatures(f.colors[4])) < SAME_FACE_DIST);
+}
+
+function handleFrame(live) {
+  if (state.phase !== 'scan' || state.checking || state.liveFaces.length >= 6) {
+    scanner.progress = 0;
+    return;
+  }
+  const feats = live.colors.map(colorFeatures);
+  const oneColor = feats.every((f) => featureDist(f, feats[4]) < SAME_FACE_DIST);
+  const looksLikeFace = live.uniform.every((u) => u >= MIN_UNIFORM) &&
+    live.brightness.every((b) => b >= MIN_BRIGHTNESS) &&
+    (!oneColor || live.gapsDark); // a plain wall is one color too, so then require the dark lines of a cube
+  const steady = !!hold.prev && feats.every((f, i) => featureDist(f, hold.prev[i]) < STEADY_DIST);
+  hold.prev = feats;
+
+  if (!looksLikeFace || !steady) {
+    hold.since = null;
+    scanner.progress = 0;
+    setLiveStatus(looksLikeFace ? 'Hold it still…' : '');
+    return;
+  }
+  const same = findSameFace(live.colors);
+  if (same >= 0) {
+    hold.since = null;
+    scanner.progress = 0;
+    setLiveStatus(`Got this face (#${same + 1}). Turn the cube to show another one.`);
+    return;
+  }
+  const now = performance.now();
+  hold.since ??= now;
+  scanner.progress = (now - hold.since) / HOLD_MS;
+  setLiveStatus('Hold it still…');
+  if (scanner.progress >= 1) {
+    scanner.progress = 0;
+    hold.since = null;
+    addFace(live.colors.map((c) => c.slice()));
   }
 }
 
-function renderFaces() {
-  const box = $('faces');
-  box.innerHTML = '';
-  SCAN_STEPS.forEach((s, idx) => {
-    const btn = document.createElement('button');
-    btn.className = 'face-thumb' + (idx === state.scanStep ? ' current' : '');
-    btn.title = `Scan the ${SIDE[s.face]} face`;
-    const mini = document.createElement('div');
-    mini.className = 'mini';
-    for (let i = 0; i < 9; i++) {
-      const cell = document.createElement('i');
-      const letter = state.facelets[FACES.indexOf(s.face) * 9 + i];
-      cell.style.background = i === 4 && !known(s.face) ? UNKNOWN_COLOR : hex(letter);
-      mini.appendChild(cell);
-    }
-    const label = document.createElement('span');
-    label.textContent = SIDE[s.face];
-    btn.append(mini, label);
-    btn.onclick = () => {
-      state.scanStep = idx;
-      if (state.phase === 'scan') cube.viewFace(s.face);
-      refresh({ redraw3d: false });
-    };
-    box.appendChild(btn);
-  });
+function setLiveStatus(text) {
+  if (text === state.liveStatus) return;
+  state.liveStatus = text;
+  $('live-status').textContent = text;
 }
 
-function capture() {
-  if (state.scanStep >= SCAN_STEPS.length || !scanner.running) return;
-  const colors = scanner.capture();
-  if (!colors) return;
-  const face = SCAN_STEPS[state.scanStep].face;
-  state.samples[face] = colors;
-  // re-scanning a face discards manual fixes on it
-  for (let i = 0; i < 9; i++) delete state.overrides[FACES.indexOf(face) * 9 + i];
+function addFace(colors) {
+  // capturing a face that's already there replaces it (handy to re-take a misread face)
+  const same = findSameFace(colors);
+  if (same >= 0) state.liveFaces[same] = { colors };
+  else if (state.liveFaces.length < 6) state.liveFaces.push({ colors });
+  else return;
   $('camera').classList.remove('flash');
   void $('camera').offsetWidth;
   $('camera').classList.add('flash');
-  // advance to the next face that hasn't been scanned yet
-  let next = SCAN_STEPS.findIndex((s, i) => i > state.scanStep && !state.samples[s.face]);
-  if (next < 0) next = SCAN_STEPS.findIndex((s) => !state.samples[s.face]);
-  state.scanStep = next < 0 ? SCAN_STEPS.length : next;
-  cube.viewFace(state.scanStep < SCAN_STEPS.length ? SCAN_STEPS[state.scanStep].face : null);
+  syncFaces();
+}
+
+function removeFace(k) {
+  state.liveFaces.splice(k, 1);
+  syncFaces();
+}
+
+/** Recomputes cube positions from the captured faces. */
+function syncFaces() {
+  state.manualColors = false;
+  state.overrides = {};
+  state.colorFixes = {};
+  state.assembly = null;
+  state.askSide = false;
+  if (state.liveFaces.length === 6) {
+    assemble();
+  } else {
+    // until all faces are in, only the first one has a known place: it's the front
+    state.samples = state.liveFaces.length ? { F: trueGrid(state.liveFaces[0]) } : {};
+  }
   refresh();
 }
+
+function assemble() {
+  const grids = state.liveFaces.map(trueGrid);
+  const keys = grids.map((_, k) => String(k));
+  const labels = classify(Object.fromEntries(grids.map((g, k) => [keys[k], g])), keys);
+  const classGrids = grids.map((_, k) => labels.slice(k * 9, k * 9 + 9).split('').map(Number));
+  const result = assembleFaces(classGrids);
+  state.assembly = result;
+  state.samples = Object.fromEntries(FACES.map((p) => [p, rotateGrid(grids[result.gridAt[p]], result.rotation[p])]));
+  state.askSide = state.mirrored === null;
+  cube.viewFace(null);
+}
+
+function capture() {
+  if (state.phase !== 'scan' || !scanner.running || state.checking) return;
+  const colors = scanner.capture();
+  if (colors) addFace(colors);
+}
+
+// ---- Camera ---------------------------------------------------------------
 
 async function startCamera() {
   $('camera-error').hidden = true;
   try {
     await scanner.start();
     $('camera').classList.add('on');
-    renderInstruction();
+    if (state.mirrored === null) runCameraCheck();
+    else refresh({ redraw3d: false });
   } catch (err) {
     $('camera-error').hidden = false;
     $('camera-error').textContent =
       err.name === 'NotAllowedError'
         ? 'Camera permission was denied. Allow it in your browser, or fill the colors by hand below.'
         : `Could not start the camera (${err.name || err}). You can fill the colors by hand below.`;
+  }
+}
+
+async function runCameraCheck() {
+  if (!scanner.running) return;
+  state.checking = true;
+  state.checkNote = '';
+  refresh({ redraw3d: false });
+  const result = await scanner.detectMirroring();
+  if (!state.checking) return; // skipped
+  state.checking = false;
+  if (result === null) {
+    state.checkNote = "I couldn't see the movement. No problem: I'll ask you one question at the end instead.";
+    refresh({ redraw3d: false });
+  } else {
+    setMirrored(result);
+    state.checkNote = `Camera check done: your camera image is ${result ? 'mirrored' : 'normal'}.`;
+    refresh({ redraw3d: false });
+  }
+}
+
+function skipCameraCheck() {
+  state.checking = false;
+  scanner.cancelMotion();
+  state.checkNote = "Skipped. I'll ask you one question at the end instead.";
+  refresh({ redraw3d: false });
+}
+
+/** Records whether the camera mirrors, and fixes an already assembled cube if that changed. */
+function setMirrored(value) {
+  const before = state.mirrored ?? false;
+  state.mirrored = value;
+  try { localStorage.setItem(MIRROR_KEY, String(value)); } catch { /* storage unavailable */ }
+  state.askSide = false;
+  // a mirrored camera image shows the reflection of the real cube: undo it
+  if (value !== before) {
+    if (state.assembly) applyTransform({ swapRL: true, mirror: true });
+    else if (state.liveFaces.length) syncFaces();
+  }
+  updatePreviewMirroring();
+  refresh();
+}
+
+/** Show the preview like a mirror: flip a normal camera image, leave an already mirrored one alone. */
+function updatePreviewMirroring() {
+  $('mirror-wrap').classList.toggle('flip', !state.mirrored);
+}
+
+/** Applies a scan transform to the samples, manual fixes and center colors, keeping them consistent. */
+function applyTransform(transform) {
+  const src = scanTransformSources(transform);
+  const relabel = relabelFor(transform);
+  if (FACES.every((f) => state.samples[f])) {
+    const flat = FACES.flatMap((f) => state.samples[f]);
+    state.samples = Object.fromEntries(FACES.map((f, fi) => [f, src.slice(fi * 9, fi * 9 + 9).map((i) => flat[i])]));
+  }
+  const overrides = {};
+  src.forEach((from, to) => {
+    if (state.overrides[from] !== undefined) overrides[to] = relabel(state.overrides[from]);
+  });
+  state.overrides = overrides;
+  const oldColors = { ...state.faceColor };
+  state.colorFixes = Object.fromEntries(Object.entries(state.colorFixes).map(([f, name]) => [relabel(f), name]));
+  if (transform.swapRL) { state.colorFixes.R = oldColors.L; state.colorFixes.L = oldColors.R; }
+}
+
+// ---- Scan UI --------------------------------------------------------------
+
+function renderInstruction() {
+  const n = state.liveFaces.length;
+  $('scan-progress').textContent = `${n} / 6`;
+  $('capture').disabled = !scanner.running || state.checking || state.phase !== 'scan';
+  let html;
+  if (state.checking) {
+    html = '<b>Quick camera check (only once):</b> hold the cube in the middle of the picture, ' +
+      'then slowly move it to <b>your right</b> →<br><button class="link" id="skip-check">Skip</button>';
+  } else if (n < 6 && !scanner.running) {
+    html = state.manualColors
+      ? 'Colors filled in by hand. Check them below, then press <b>Solve it</b>.'
+      : 'Turn on the camera, then show the faces of your cube one by one.';
+  } else if (n < 6) {
+    html = `Show each face of the cube inside the square, <b>in any order and any way up</b>. ` +
+      `Hold it still for a moment and it's captured automatically. ${n ? `${6 - n} to go!` : ''}`;
+    if (state.checkNote) html = `<span class="muted">${state.checkNote}</span><br>` + html;
+  } else {
+    html = 'All 6 faces found! Check the colors below, then press <b>Solve it</b>. ' +
+      'To re-take a face, show it again and press <b>Capture now</b>, or remove it with ×.';
+  }
+  $('scan-instruction').innerHTML = html;
+  $('skip-check')?.addEventListener('click', skipCameraCheck);
+  $('live-status').hidden = !scanner.running || state.checking || n >= 6;
+  const mode = $('camera-mode');
+  mode.hidden = !scanner.running || state.checking;
+  mode.innerHTML = state.mirrored === null
+    ? 'Camera direction: not checked yet · <button class="link" id="recheck">Check now</button>'
+    : `Camera image: ${state.mirrored ? 'mirrored' : 'normal'} · <button class="link" id="recheck">Check again</button>`;
+  $('recheck')?.addEventListener('click', runCameraCheck);
+}
+
+function renderFaces() {
+  const box = $('faces');
+  box.innerHTML = '';
+  for (let k = 0; k < 6; k++) {
+    const face = state.liveFaces[k];
+    const slot = document.createElement('div');
+    slot.className = 'face-thumb' + (face ? ' filled' : '');
+    const mini = document.createElement('div');
+    mini.className = 'mini';
+    // shown the way it looked in the preview
+    const shown = face ? (state.mirrored ? face.colors : mirrorGrid(face.colors)) : null;
+    for (let i = 0; i < 9; i++) {
+      const cell = document.createElement('i');
+      if (shown) cell.style.background = rgbCss(shown[i]);
+      mini.appendChild(cell);
+    }
+    const label = document.createElement('span');
+    label.textContent = face ? nearestColorName(face.colors[4]) : `${k + 1}`;
+    slot.append(mini, label);
+    if (face) {
+      const del = document.createElement('button');
+      del.className = 'remove';
+      del.title = 'Remove this face';
+      del.textContent = '×';
+      del.onclick = () => removeFace(k);
+      slot.append(del);
+    }
+    box.appendChild(slot);
   }
 }
 
@@ -313,80 +495,36 @@ function renderNet() {
 function updateValidation() {
   const v = validate(state.facelets);
   const el = $('validation');
-  if (v.ok) {
+  if (v.ok && state.askSide) {
+    el.className = 'validation';
+    el.innerHTML = '<div class="fix-box">One question, only needed once: hold your cube with ' +
+      `${col('U')} on top and ${col('F')} facing you. Which color is on the <b>right</b> side?</div>`;
+    const row = document.createElement('div');
+    row.className = 'row fix-choices';
+    for (const [face, mirrored] of [['R', false], ['L', true]]) {
+      const btn = document.createElement('button');
+      btn.className = 'btn fix';
+      btn.innerHTML = `${sw(face)}${state.faceColor[face]}`;
+      btn.onclick = () => setMirrored(mirrored);
+      row.append(btn);
+    }
+    el.append(row);
+  } else if (v.ok) {
     el.textContent = state.facelets === SOLVED ? 'This cube is already solved!' : 'Looks good — this cube is solvable.';
     el.className = 'validation ok';
+  } else if (state.assembly && !state.assembly.valid && !Object.keys(state.overrides).length) {
+    el.textContent = 'Some stickers seem to be misread, so the faces don\'t fit together perfectly. ' +
+      'Compare the map with your cube and fix the wrong stickers, or re-take a face.';
+    el.className = 'validation bad';
   } else {
     el.textContent = v.error;
     el.className = 'validation bad';
-    offerScanFix(el);
   }
   const solveBtn = $('solve');
   if (state.phase === 'scan' && !pendingSolve) {
-    solveBtn.disabled = !v.ok || state.facelets === SOLVED;
+    solveBtn.disabled = !v.ok || state.askSide || state.facelets === SOLVED;
     solveBtn.textContent = solverReady ? 'Solve it' : 'Solve it (solver loading…)';
   }
-}
-
-/** If the scan is unsolvable because of a typical scanning mistake, offer to repair it. */
-function offerScanFix(el) {
-  const fixes = findScanFixes(state.facelets);
-  if (!fixes.length) return;
-  // Repairs can disagree about which color sits on the right; if so, ask the user.
-  const byRightColor = new Map();
-  for (const fix of fixes) {
-    const right = state.faceColor[fix.transform.swapRL ? 'L' : 'R'];
-    if (!byRightColor.has(right)) byRightColor.set(right, fix);
-  }
-  const box = document.createElement('div');
-  box.className = 'fix-box';
-  if (byRightColor.size === 1) {
-    const { transform } = fixes[0];
-    const reasons = [];
-    if (transform.swapRL) reasons.push('the cube was turned to the right instead of the left');
-    if (transform.mirror) reasons.push('your camera image is mirrored');
-    const turned = FACES.filter((_, i) => transform.rots[i]).map((f) => SIDE[f]);
-    if (turned.length) reasons.push(`the ${turned.join(', ')} face${turned.length > 1 ? 's were' : ' was'} scanned turned sideways`);
-    box.innerHTML = `It looks like ${reasons.join(', and ')}.`;
-    const btn = document.createElement('button');
-    btn.className = 'btn fix';
-    btn.textContent = 'Fix it automatically';
-    btn.onclick = () => applyScanFix(transform);
-    box.append(btn);
-  } else {
-    box.innerHTML = 'This looks like a left/right mix-up while scanning, and it can be fixed. One question: ' +
-      `hold your cube with ${col('U')} on top and ${col('F')} facing you. Which color is on the <b>right</b> side?`;
-    const row = document.createElement('div');
-    row.className = 'row fix-choices';
-    for (const [color, fix] of byRightColor) {
-      const btn = document.createElement('button');
-      btn.className = 'btn fix';
-      btn.innerHTML = `<span class="swatch" style="background:${PALETTE[color]}"></span>${color}`;
-      btn.onclick = () => applyScanFix(fix.transform);
-      row.append(btn);
-    }
-    box.append(row);
-  }
-  el.append(box);
-}
-
-/** Applies a scan repair to the raw samples, manual fixes and center colors, so everything stays consistent. */
-function applyScanFix(transform) {
-  const src = scanTransformSources(transform);
-  const relabel = relabelFor(transform);
-  if (FACES.every((f) => state.samples[f])) {
-    const flat = FACES.flatMap((f) => state.samples[f]);
-    state.samples = Object.fromEntries(FACES.map((f, fi) => [f, src.slice(fi * 9, fi * 9 + 9).map((i) => flat[i])]));
-  }
-  const overrides = {};
-  src.forEach((from, to) => {
-    if (state.overrides[from] !== undefined) overrides[to] = relabel(state.overrides[from]);
-  });
-  state.overrides = overrides;
-  const oldColors = { ...state.faceColor };
-  state.colorFixes = Object.fromEntries(Object.entries(state.colorFixes).map(([f, name]) => [relabel(f), name]));
-  if (transform.swapRL) { state.colorFixes.R = oldColors.L; state.colorFixes.L = oldColors.R; }
-  refresh();
 }
 
 // ---- Solving ----------------------------------------------------------------
@@ -400,6 +538,7 @@ function startSolve(moves) {
   $('solve-bar').hidden = false;
   $('stage-hint').hidden = true;
   $('hold').innerHTML = `Hold your cube with ${col('U')} on top and ${col('F')} facing you — keep it that way the whole time.`;
+  cube.controls.autoRotate = false;
   cube.setState(state.facelets);
   cube.viewFace(null);
   renderMoves();
@@ -482,16 +621,12 @@ function stopPlay() {
 function resetAll() {
   stopPlay();
   state.phase = 'scan';
-  state.samples = {};
-  state.overrides = {};
-  state.colorFixes = {};
-  state.manualColors = false;
-  state.scanStep = 0;
+  state.liveFaces = [];
   state.solution = [];
   $('solve-bar').hidden = true;
   $('stage-hint').hidden = false;
-  cube.viewFace(SCAN_STEPS[0].face);
-  refresh();
+  cube.viewFace(null);
+  syncFaces();
 }
 
 /** Fill the cube with a random (valid) scramble — handy to try the app without a camera. */
@@ -500,13 +635,12 @@ function demo() {
   const scrambled = applyAlg(SOLVED, randomScramble());
   for (let i = 0; i < 54; i++) if (i % 9 !== 4) state.overrides[i] = scrambled[i];
   state.manualColors = true;
-  state.scanStep = SCAN_STEPS.length;
-  cube.viewFace(null);
   refresh();
 }
 
 // ---- Wiring -----------------------------------------------------------------
 
+scanner.onFrame = handleFrame;
 $('start-camera').onclick = startCamera;
 $('capture').onclick = capture;
 $('demo').onclick = demo;
@@ -534,7 +668,9 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-cube.viewFace(SCAN_STEPS[0].face);
+cube.controls.autoRotateSpeed = 1.5;
+cube.viewFace(null);
+updatePreviewMirroring();
 refresh();
 
-if (import.meta.env.DEV) window.__app = { state, refresh }; // debugging hook
+if (import.meta.env.DEV) window.__app = { state, refresh, scanner, handleFrame, addFace, syncFaces }; // debugging hook

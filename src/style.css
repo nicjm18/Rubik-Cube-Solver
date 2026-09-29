@@ -125,7 +125,8 @@ kbd {
   background: #07080c;
   border: 1px solid var(--line);
 }
-.mirror { position: absolute; inset: 0; transform: scaleX(-1); }
+.mirror { position: absolute; inset: 0; }
+.mirror.flip { transform: scaleX(-1); }
 .mirror video, .mirror canvas {
   position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
 }
@@ -157,13 +158,20 @@ kbd {
 
 .faces { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
 .face-thumb {
-  border: 1px solid var(--line); border-radius: 8px; padding: 4px;
-  background: var(--bg-2); cursor: pointer; display: flex; flex-direction: column; gap: 3px; align-items: center;
+  position: relative;
+  border: 1px dashed var(--line); border-radius: 8px; padding: 4px;
+  background: var(--bg-2); display: flex; flex-direction: column; gap: 3px; align-items: center;
 }
-.face-thumb.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.face-thumb.filled { border-style: solid; }
+.face-thumb .remove {
+  position: absolute; top: -7px; right: -7px; width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--card); color: var(--muted);
+  font-size: 12px; line-height: 1; padding: 0; cursor: pointer;
+}
+.face-thumb .remove:hover { color: var(--text); border-color: var(--accent); }
 .face-thumb .mini { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; width: 100%; aspect-ratio: 1; }
 .face-thumb .mini i { border-radius: 2px; background: #333a4a; }
-.face-thumb span { font-size: 10px; color: var(--muted); }
+.face-thumb span { font-size: 10px; color: var(--muted); text-transform: capitalize; }
 
 /* Net editor */
 .palette { display: flex; gap: 8px; justify-content: center; }
@@ -246,3 +254,5 @@ kbd {
 .fix-choices { margin-top: 8px; }
 .btn.fix { margin-top: 8px; padding: 6px 12px; font-size: 13px; color: var(--text); display: inline-flex; align-items: center; gap: 4px; }
 .fix-choices .btn.fix { margin-top: 0; text-transform: capitalize; }
+.live-status { margin: -4px 0 0; min-height: 18px; font-size: 13px; color: var(--accent); }
+.camera-mode { margin: 0; font-size: 12px; text-align: center; }

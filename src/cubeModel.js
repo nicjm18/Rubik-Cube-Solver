@@ -122,11 +122,11 @@ export function applyAlg(facelets, alg) {
 // ---- Validation -----------------------------------------------------------
 // Standard Kociemba corner/edge facelet tables (0-based global indices).
 const U = 0, R = 9, F = 18, D = 27, L = 36, B = 45;
-const CORNER_FACELETS = [
+export const CORNER_FACELETS = [
   [U + 8, R + 0, F + 2], [U + 6, F + 0, L + 2], [U + 0, L + 0, B + 2], [U + 2, B + 0, R + 2],
   [D + 2, F + 8, R + 6], [D + 0, L + 8, F + 6], [D + 6, B + 8, L + 6], [D + 8, R + 8, B + 6],
 ];
-const EDGE_FACELETS = [
+export const EDGE_FACELETS = [
   [U + 5, R + 1], [U + 7, F + 1], [U + 3, L + 1], [U + 1, B + 1],
   [D + 5, R + 7], [D + 1, F + 7], [D + 3, L + 7], [D + 7, B + 7],
   [F + 5, R + 3], [F + 3, L + 5], [B + 5, L + 3], [B + 3, R + 5],
@@ -199,10 +199,11 @@ export function validate(facelets) {
 }
 
 // ---- Repairing scanning mistakes ------------------------------------------
-// A "scan transform" describes a common way a scan goes wrong:
-//   swapRL: the cube was turned right instead of left, so the right and left faces were swapped
-//   mirror: every face image is mirrored (some webcams flip the picture)
-//   rots:   quarter turns per face (URFDLB order), for faces that were held sideways
+// A "scan transform" remaps a scanned cube:
+//   swapRL: swap the right and left faces
+//   mirror: mirror every face image left-right
+//   rots:   quarter turns per face (URFDLB order)
+// swapRL + mirror together reflect the whole cube, which is how a mirrored camera image is undone.
 const MIRROR_IDX = [2, 1, 0, 5, 4, 3, 8, 7, 6];
 const ROT_IDX = [6, 3, 0, 7, 4, 1, 8, 5, 2]; // turned[i] = original[ROT_IDX[i]]
 const SWAP_RL = { R: 'L', L: 'R' };
@@ -228,36 +229,6 @@ export const relabelFor = ({ swapRL = false }) => (c) => (swapRL ? SWAP_RL[c] ||
 export function applyScanTransform(facelets, t) {
   const relabel = relabelFor(t);
   return scanTransformSources(t).map((s) => relabel(facelets[s])).join('');
-}
-
-/**
- * Looks for simple scanning mistakes that explain an unsolvable scan. For each kind of mistake
- * (none, R/L swapped, mirrored, both) returns the repair with the fewest turned faces, if any:
- * [{ transform, facelets }]. Different repairs can give different cubes; the caller decides.
- */
-export function findScanFixes(facelets) {
-  if (facelets.includes('?') || validate(facelets).ok) return [];
-  const fixes = [];
-  for (const base of [{}, { swapRL: true }, { mirror: true }, { swapRL: true, mirror: true }]) {
-    const start = applyScanTransform(facelets, base);
-    const rotateFace = (s) => ROT_IDX.map((i) => s[i]).join('');
-    const variants = FACES.map((_, fi) => {
-      const v = [start.slice(fi * 9, fi * 9 + 9)];
-      for (let r = 1; r < 4; r++) v.push(rotateFace(v[r - 1]));
-      return v;
-    });
-    let best = null, bestCount = Infinity;
-    for (let n = 0; n < 4 ** 6; n++) {
-      const rots = [];
-      for (let k = n, i = 0; i < 6; i++, k = Math.floor(k / 4)) rots.push(k % 4);
-      const count = rots.filter(Boolean).length;
-      if (count >= bestCount) continue;
-      const candidate = rots.map((r, fi) => variants[fi][r]).join('');
-      if (validate(candidate).ok) { best = { transform: { ...base, rots }, facelets: candidate }; bestCount = count; }
-    }
-    if (best) fixes.push(best);
-  }
-  return fixes;
 }
 
 export function randomScramble(length = 22) {

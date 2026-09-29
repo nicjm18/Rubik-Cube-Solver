@@ -31,21 +31,44 @@ for (let t = 0; t < 20; t++) {
 }
 console.log('all tests passed');
 
-// Typical scanning mistakes are detected and repaired
+// Faces shown in any order and rotation are put back together
 {
-  const { findScanFixes, applyScanTransform } = await import('../src/cubeModel.js');
-  for (let t = 0; t < 10; t++) {
-    const start = applyAlg(SOLVED, randomScramble());
-    // one face held sideways
-    const rot = (s) => [6, 3, 0, 7, 4, 1, 8, 5, 2].map((i) => s[i]).join('');
-    const turned = start.slice(0, 27) + rot(start.slice(27, 36)) + start.slice(36);
-    if (!validate(turned).ok) assert.ok(findScanFixes(turned).some((f) => f.facelets === start), 'rotated face repaired');
-    // cube turned right instead of left: R and L grids swapped
-    const swapped = applyScanTransform(start, { swapRL: true });
-    if (!validate(swapped).ok) assert.ok(findScanFixes(swapped).some((f) => f.facelets === start), 'R/L swap repaired');
-    // mirrored camera image
-    const mirrored = applyScanTransform(start, { mirror: true });
-    if (!validate(mirrored).ok) assert.ok(findScanFixes(mirrored).some((f) => f.facelets === start), 'mirror repaired');
+  const { FACES, FACE_NORMALS, faceletPosition, faceletIndex } = await import('../src/cubeModel.js');
+  const { assembleFaces, rotateGrid, MAX_SCORE } = await import('../src/assemble.js');
+  const r90 = (v, axis) => { let [x, y, z] = v; if (axis === 0) [y, z] = [-z, y]; else if (axis === 1) [x, z] = [z, -x]; else [x, y] = [-y, x]; return [x, y, z]; };
+  const turnCube = (c, axis) => {
+    const o = [];
+    FACES.forEach((f, fi) => { for (let i = 0; i < 9; i++) o[faceletIndex(r90(faceletPosition(f, i), axis), r90(FACE_NORMALS[f], axis))] = c[fi * 9 + i]; });
+    return o.join('');
+  };
+  const orientations = (c) => {
+    const seen = new Set([c]), queue = [c];
+    while (queue.length) { const x = queue.pop(); for (const a of [0, 1, 2]) { const t = turnCube(x, a); if (!seen.has(t)) { seen.add(t); queue.push(t); } } }
+    return seen;
+  };
+  const shuffle = (a) => a.map((x) => [Math.random(), x]).sort((p, q) => p[0] - q[0]).map((p) => p[1]);
+  // colors as the camera sees them: a letter per real color, independent of where faces end up
+  const toColors = (facelets) => facelets.replace(/[URFDLB]/g, (c) => 'wrgyob'['URFDLB'.indexOf(c)]);
+
+  console.time('assemble x20');
+  for (let t = 0; t < 20; t++) {
+    const cube = toColors(applyAlg(SOLVED, randomScramble()));
+    const shown = shuffle(FACES.map((_, fi) => rotateGrid(cube.slice(fi * 9, fi * 9 + 9).split(''), Math.floor(Math.random() * 4))));
+    const classOf = Object.fromEntries(shown.map((g, k) => [g[4], k]));
+    const result = assembleFaces(shown.map((g) => g.map((c) => classOf[c])));
+    assert.ok(result.valid, 'assembled cube is valid');
+    const colors = result.facelets.replace(/[URFDLB]/g, (c) => shown[result.gridAt[c]][4]);
+    assert.ok(orientations(cube).has(colors), 'assembled cube is the scanned cube');
   }
-  console.log('scan repairs ok');
+  console.timeEnd('assemble x20');
+
+  // one misread sticker: still placed, with one piece flagged
+  const cube = toColors(applyAlg(SOLVED, randomScramble()));
+  const shown = FACES.map((_, fi) => cube.slice(fi * 9, fi * 9 + 9).split(''));
+  const classOf = Object.fromEntries(shown.map((g, k) => [g[4], k]));
+  const grids = shown.map((g) => g.map((c) => classOf[c]));
+  grids[2][0] = (grids[2][0] + 1) % 6;
+  const result = assembleFaces(grids);
+  assert.ok(!result.valid && result.score >= MAX_SCORE - 2, 'misread cube placed with a low error count');
+  console.log('assembly ok');
 }

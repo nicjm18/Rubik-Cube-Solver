@@ -1,0 +1,21 @@
+{
+  "name": "rubik-cube-solver",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "vite --open",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node test/model.test.mjs"
+  },
+  "author": "",
+  "license": "ISC",
+  "description": "Scan a Rubik cube with your webcam and solve it step by step with a 3D guide",
+  "dependencies": {
+    "cubejs": "^1.3.2",
+    "three": "^0.186.1"
+  },
+  "devDependencies": {
+    "vite": "^6.4.3"
+  },
+  "type": "module"
+}

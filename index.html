@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cube Solver</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 30 30'><rect x='1' y='1' width='8' height='8' rx='2' fill='%23d8202c'/><rect x='11' y='1' width='8' height='8' rx='2' fill='%23ffd21f'/><rect x='21' y='1' width='8' height='8' rx='2' fill='%2312a150'/><rect x='1' y='11' width='8' height='8' rx='2' fill='%231b5fd9'/><rect x='11' y='11' width='8' height='8' rx='2' fill='%23f4f4f0'/><rect x='21' y='11' width='8' height='8' rx='2' fill='%23ff7b12'/><rect x='1' y='21' width='8' height='8' rx='2' fill='%2312a150'/><rect x='11' y='21' width='8' height='8' rx='2' fill='%23d8202c'/><rect x='21' y='21' width='8' height='8' rx='2' fill='%23ffd21f'/></svg>" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <h1>Cube Solver</h1>
+      </div>
+      <div id="solver-status" class="pill">Loading solver…</div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel" id="panel">
+        <!-- 1. Scan -->
+        <section class="card" id="scan-card">
+          <div class="card-head">
+            <h2><span class="num">1</span> Scan your cube</h2>
+            <span id="scan-progress" class="muted">0 / 6</span>
+          </div>
+
+          <div class="camera" id="camera">
+            <div class="mirror">
+              <video id="video" playsinline muted></video>
+              <canvas id="overlay"></canvas>
+            </div>
+            <div class="camera-off" id="camera-off">
+              <p>Show each face of your cube to the camera, filling the 3×3 grid.</p>
+              <button class="btn primary" id="start-camera">Turn on camera</button>
+              <p id="camera-error" class="error" hidden></p>
+            </div>
+          </div>
+
+          <div class="instruction" id="scan-instruction"></div>
+
+          <div class="row">
+            <button class="btn primary grow" id="capture" disabled>Capture face <kbd>Space</kbd></button>
+          </div>
+
+          <div class="faces" id="faces"></div>
+
+          <div class="row small-links">
+            <button class="link" id="demo">Try a random scramble</button>
+            <span class="muted">·</span>
+            <button class="link" id="reset">Start over</button>
+          </div>
+        </section>
+
+        <!-- 2. Check colors -->
+        <section class="card" id="review-card">
+          <div class="card-head">
+            <h2><span class="num">2</span> Check the colors</h2>
+          </div>
+          <p class="muted small">If a sticker is wrong, pick a color and click the sticker to fix it. If a center shows the wrong color, click it to recolor it.</p>
+          <div class="palette" id="palette"></div>
+          <div class="net" id="net"></div>
+          <p id="validation" class="validation"></p>
+          <button class="btn primary big" id="solve" disabled>Solve it</button>
+        </section>
+      </aside>
+
+      <section class="stage">
+        <div id="viewport" class="viewport"></div>
+        <div class="stage-hint" id="stage-hint">Drag to rotate the view</div>
+
+        <!-- 3. Solve -->
+        <div class="solve-bar" id="solve-bar" hidden>
+          <div class="hold" id="hold"></div>
+          <div class="step-card">
+            <div class="step-count" id="step-count"></div>
+            <div class="step-main">
+              <div class="move-badge" id="move-badge"></div>
+              <div class="move-text" id="move-text"></div>
+            </div>
+          </div>
+          <div class="moves" id="moves"></div>
+          <div class="controls">
+            <button class="btn" id="prev" title="Previous (←)">◀ Back</button>
+            <button class="btn" id="play" title="Play / pause (P)">▶ Play</button>
+            <button class="btn primary" id="next" title="Next (→ or Space)">Next ▶</button>
+            <label class="speed">Speed <input type="range" id="speed" min="0.4" max="2.5" step="0.1" value="1" /></label>
+            <button class="btn ghost" id="exit-solve">New cube</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

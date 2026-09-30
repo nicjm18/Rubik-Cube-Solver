@@ -16,8 +16,9 @@ Vite opens the app at http://localhost:5173. The camera only works on `localhost
 
 1. **Scan.** Click *Turn on camera*. The first time, a quick camera check asks you to move the cube
    to your right. This tells the app whether your webcam flips the image, and the browser remembers it.
-   Then show the 6 faces inside the square, **in any order and any way up**. Hold each one still for
-   a moment and it's captured automatically. The app works out how the faces fit together from the
+   Then show the 6 faces to the camera, **in any order and any way up**. The cube doesn't have to fill
+   the picture: the app finds the face anywhere, even small or slightly tilted, and outlines the stickers
+   it found. Hold each face still for a moment and it's captured automatically. The app works out how the faces fit together from the
    cube's own pieces. If you skip the camera check, it asks one question about your cube at the end instead.
    To re-take a face, show it again and press **Capture now**, or remove it with ×.
 2. **Check the colors.** The 2D map shows the assembled cube. If a sticker is wrong, pick a color and
@@ -39,11 +40,12 @@ No cube handy? Click **Try a random scramble**.
 | --- | --- |
 | `src/cubeModel.js` | Cube logic: sticker geometry, moves, and a solvability check (twists, flips, parity) |
 | `src/assemble.js` | Puts the 6 scanned faces together, whatever order and rotation they were shown in, by finding the only arrangement where all corners and edges make sense |
-| `src/scanner.js` | Webcam capture, live face detection (auto-capture when a face is held still), the camera direction check, and sticker color sampling. Groups the 54 stickers into 6 colors of 9, using the centers as seeds, by brightness-independent color (chromaticity) |
+| `src/faceDetector.js` | Finds the face anywhere in the picture with [OpenCV.js](https://docs.opencv.org/) (sticker outlines, then a 3×3 pattern), so colors are read only from the middle of real stickers |
+| `src/scanner.js` | Webcam capture, live face detection (auto-capture when a face is held still, colors averaged over the hold), the camera direction check, and sticker color sampling. Groups the 54 stickers into 6 colors of 9, using the centers as seeds, by brightness-independent color (chromaticity) |
 | `src/solver.worker.js` | [cubejs](https://github.com/ldez/cubejs) Kociemba two-phase solver, which finds a solution in about 20 moves. It runs in a Web Worker because building its tables takes about 5 s |
 | `src/cube3d.js` | Three.js cube with animated layer turns, the direction arrows, and camera moves |
 | `src/main.js` | UI flow: scan, check, solve |
 
 Run `npm test` to check the move model against cubejs and to confirm that the solver's solutions solve the cube.
 
-Tips for good scans: use even light, avoid glare on the stickers, and keep the cube close enough to fill the grid.
+Tips for good scans: use even light and avoid glare on the stickers. If the face finder can't load, the app falls back to a fixed square that the face must fill.

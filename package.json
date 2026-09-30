@@ -5,12 +5,13 @@
     "dev": "vite --open",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node test/model.test.mjs"
+    "test": "node test/model.test.mjs && node test/detector.test.mjs"
   },
   "author": "",
   "license": "ISC",
   "description": "Scan a Rubik cube with your webcam and solve it step by step with a 3D guide",
   "dependencies": {
+    "@techstark/opencv-js": "^5.0.0-release.1",
     "cubejs": "^1.3.2",
     "three": "^0.186.1"
   },

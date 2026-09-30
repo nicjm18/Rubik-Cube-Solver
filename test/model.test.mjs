@@ -57,10 +57,22 @@ console.log('all tests passed');
     const classOf = Object.fromEntries(shown.map((g, k) => [g[4], k]));
     const result = assembleFaces(shown.map((g) => g.map((c) => classOf[c])));
     assert.ok(result.valid, 'assembled cube is valid');
-    const colors = result.facelets.replace(/[URFDLB]/g, (c) => shown[result.gridAt[c]][4]);
-    assert.ok(orientations(cube).has(colors), 'assembled cube is the scanned cube');
+    // the real cube is always among the arrangements that fit (usually the only one)
+    const found = result.alternatives.map((a) => a.facelets.replace(/[URFDLB]/g, (c) => shown[a.gridAt[c]][4]));
+    assert.ok(found.some((colors) => orientations(cube).has(colors)), 'assembled cube is the scanned cube');
   }
   console.timeEnd('assemble x20');
+
+  // A real cube whose bottom face also fits turned 180°: both arrangements must be offered
+  {
+    const cube = toColors(applyAlg(SOLVED, "R F2 U' D2 L U2 R F' R2 B' L2 F' B2 L F2 U' B' U' D L' F L2"));
+    const shown = [1, 2, 0, 3, 4, 5].map((fi, k) => rotateGrid(cube.slice(fi * 9, fi * 9 + 9).split(''), [1, 3, 0, 3, 3, 3][fi]));
+    const classOf = Object.fromEntries(shown.map((g, k) => [g[4], k]));
+    const result = assembleFaces(shown.map((g) => g.map((c) => classOf[c])));
+    assert.equal(result.alternatives.length, 2, 'ambiguous cube offers two arrangements');
+    const found = result.alternatives.map((a) => a.facelets.replace(/[URFDLB]/g, (c) => shown[a.gridAt[c]][4]));
+    assert.ok(found.some((colors) => orientations(cube).has(colors)), 'the real cube is one of them');
+  }
 
   // one misread sticker: still placed, with one piece flagged
   const cube = toColors(applyAlg(SOLVED, randomScramble()));

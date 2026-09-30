@@ -53,6 +53,7 @@ kbd {
   border: 1px solid var(--line);
   color: var(--muted);
 }
+.pills { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .pill.ready { color: var(--ok); border-color: rgba(47, 208, 138, 0.35); }
 
 .layout {
@@ -256,3 +257,6 @@ kbd {
 .fix-choices .btn.fix { margin-top: 0; text-transform: capitalize; }
 .live-status { margin: -4px 0 0; min-height: 18px; font-size: 13px; color: var(--accent); }
 .camera-mode { margin: 0; font-size: 12px; text-align: center; }
+.btn.fix.option { padding: 6px; gap: 6px; }
+.btn.fix.option .mini { display: grid; grid-template-columns: repeat(3, 14px); gap: 2px; }
+.btn.fix.option .mini i { width: 14px; height: 14px; border-radius: 3px; }

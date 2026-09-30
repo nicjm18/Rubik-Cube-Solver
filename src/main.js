@@ -1,6 +1,7 @@
 import { Cube3D, PALETTE, UNKNOWN_COLOR } from './cube3d.js';
 import { Scanner, classify, colorFeatures, featureDist } from './scanner.js';
 import { assembleFaces, rotateGrid, mirrorGrid } from './assemble.js';
+import { loadOpenCV } from './faceDetector.js';
 import {
   FACES, SOLVED, validate, scanTransformSources, relabelFor, applyAlg, parseAlg, parseMove, invertMove, randomScramble,
 } from './cubeModel.js';
@@ -21,7 +22,7 @@ const REFERENCE_RGB = {
 const HOLD_MS = 800; // how long a face must be held still to be captured
 const MIN_UNIFORM = 0.6; // each cell must be mostly one color...
 const MIN_BRIGHTNESS = 35; // ...and not too dark
-const STEADY_DIST = 12 ** 2; // max color change per cell between frames while "still"
+const STEADY_DIST = 20 ** 2; // max color change per cell between frames while "still" (allows webcam noise)
 const SAME_FACE_DIST = 25 ** 2; // center colors closer than this are the same face
 
 const MIRROR_KEY = 'cubeSolver.cameraMirrored';
@@ -79,6 +80,7 @@ const state = {
   manualColors: false, // colors entered without the camera (demo)
   mirrored: loadMirrored(), // does the camera send a mirrored image? null = not known yet
   askSide: false, // ask the one-time "which color is on the right" question
+  askArrangement: false, // several arrangements fit the faces: ask which one matches the cube
   checking: false, // camera direction check running
   checkNote: '',
   liveStatus: '',
@@ -87,7 +89,7 @@ const state = {
   step: 0,
   playing: null,
 };
-const hold = { prev: null, since: null };
+const hold = { prev: null, since: null, frames: [] }; // frames read while the face is held still
 
 const cube = new Cube3D($('viewport'));
 const scanner = new Scanner($('video'), $('overlay'));
@@ -215,14 +217,16 @@ function handleFrame(live) {
   }
   const feats = live.colors.map(colorFeatures);
   const oneColor = feats.every((f) => featureDist(f, feats[4]) < SAME_FACE_DIST);
-  const looksLikeFace = live.uniform.every((u) => u >= MIN_UNIFORM) &&
-    live.brightness.every((b) => b >= MIN_BRIGHTNESS) &&
-    (!oneColor || live.gapsDark); // a plain wall is one color too, so then require the dark lines of a cube
+  const clean = live.uniform.every((u) => u >= MIN_UNIFORM) && live.brightness.every((b) => b >= MIN_BRIGHTNESS);
+  // OpenCV found the stickers, or the face fills the fixed square (a plain wall is one color too,
+  // so then require the dark lines between stickers)
+  const looksLikeFace = clean && (live.detected || !oneColor || live.gapsDark);
   const steady = !!hold.prev && feats.every((f, i) => featureDist(f, hold.prev[i]) < STEADY_DIST);
   hold.prev = feats;
 
   if (!looksLikeFace || !steady) {
     hold.since = null;
+    hold.frames = [];
     scanner.progress = 0;
     setLiveStatus(looksLikeFace ? 'Hold it still…' : '');
     return;
@@ -236,12 +240,16 @@ function handleFrame(live) {
   }
   const now = performance.now();
   hold.since ??= now;
+  hold.frames.push(live.colors);
   scanner.progress = (now - hold.since) / HOLD_MS;
   setLiveStatus('Hold it still…');
   if (scanner.progress >= 1) {
     scanner.progress = 0;
     hold.since = null;
-    addFace(live.colors.map((c) => c.slice()));
+    // the median over all frames of the hold is steadier than any single frame
+    const med = (values) => values.sort((a, b) => a - b)[values.length >> 1];
+    addFace(live.colors.map((_, i) => [0, 1, 2].map((ch) => med(hold.frames.map((f) => f[i][ch])))));
+    hold.frames = [];
   }
 }
 
@@ -275,6 +283,7 @@ function syncFaces() {
   state.colorFixes = {};
   state.assembly = null;
   state.askSide = false;
+  state.askArrangement = false;
   if (state.liveFaces.length === 6) {
     assemble();
   } else {
@@ -290,10 +299,60 @@ function assemble() {
   const labels = classify(Object.fromEntries(grids.map((g, k) => [keys[k], g])), keys);
   const classGrids = grids.map((_, k) => labels.slice(k * 9, k * 9 + 9).split('').map(Number));
   const result = assembleFaces(classGrids);
-  state.assembly = result;
-  state.samples = Object.fromEntries(FACES.map((p) => [p, rotateGrid(grids[result.gridAt[p]], result.rotation[p])]));
+  state.assembly = { ...result, grids };
+  useArrangement(result);
+  state.askArrangement = result.alternatives.length > 1;
   state.askSide = state.mirrored === null;
   cube.viewFace(null);
+}
+
+/** Places the captured faces according to one arrangement found by assembleFaces. */
+function useArrangement(arrangement) {
+  const { grids } = state.assembly;
+  state.samples = Object.fromEntries(FACES.map((p) => [p, rotateGrid(grids[arrangement.gridAt[p]], arrangement.rotation[p])]));
+}
+
+const VIEW_HINT = {
+  U: 'seen from above, with the front edge at the bottom',
+  D: 'seen from below, with the front edge at the top',
+  F: 'seen straight on', R: 'seen from the right, top edge up', B: 'seen from behind, top edge up', L: 'seen from the left, top edge up',
+};
+
+/** Rare case: the faces fit together in more than one way. Show the options for the faces that differ. */
+function renderArrangementQuestion(el) {
+  const options = state.assembly.alternatives;
+  const differs = FACES.filter((p) => options.some((o) =>
+    o.gridAt[p] !== options[0].gridAt[p] || o.rotation[p] !== options[0].rotation[p]));
+  const faceText = differs.map((p) => `the <b>${SIDE[p]}</b> face (${state.faceColor[p]} center, ${VIEW_HINT[p]})`).join(' and ');
+  el.className = 'validation';
+  el.innerHTML = '<div class="fix-box">Your cube\'s pattern fits together in more than one way, so I need your help once. ' +
+    `Hold your cube with ${col('U')} on top and ${col('F')} facing you, and look at ${faceText}. Which one is it?</div>`;
+  const row = document.createElement('div');
+  row.className = 'row fix-choices';
+  for (const option of options) {
+    const btn = document.createElement('button');
+    btn.className = 'btn fix option';
+    for (const p of differs) {
+      const mini = document.createElement('div');
+      mini.className = 'mini';
+      const grid = rotateGrid(state.assembly.grids[option.gridAt[p]], option.rotation[p]);
+      // color each sticker the way the map does: by which center it matches
+      const letters = option.facelets.slice(FACES.indexOf(p) * 9, FACES.indexOf(p) * 9 + 9);
+      grid.forEach((_, i) => {
+        const cell = document.createElement('i');
+        cell.style.background = hex(letters[i]);
+        mini.append(cell);
+      });
+      btn.append(mini);
+    }
+    btn.onclick = () => {
+      useArrangement(option);
+      state.askArrangement = false;
+      refresh();
+    };
+    row.append(btn);
+  }
+  el.append(row);
 }
 
 function capture() {
@@ -398,7 +457,8 @@ function renderInstruction() {
       ? 'Colors filled in by hand. Check them below, then press <b>Solve it</b>.'
       : 'Turn on the camera, then show the faces of your cube one by one.';
   } else if (n < 6) {
-    html = `Show each face of the cube inside the square, <b>in any order and any way up</b>. ` +
+    const where = scanner.cv ? 'to the camera (anywhere in the picture)' : 'inside the square';
+    html = `Show each face of the cube ${where}, <b>in any order and any way up</b>. ` +
       `Hold it still for a moment and it's captured automatically. ${n ? `${6 - n} to go!` : ''}`;
     if (state.checkNote) html = `<span class="muted">${state.checkNote}</span><br>` + html;
   } else {
@@ -495,7 +555,9 @@ function renderNet() {
 function updateValidation() {
   const v = validate(state.facelets);
   const el = $('validation');
-  if (v.ok && state.askSide) {
+  if (state.askArrangement) {
+    renderArrangementQuestion(el);
+  } else if (v.ok && state.askSide) {
     el.className = 'validation';
     el.innerHTML = '<div class="fix-box">One question, only needed once: hold your cube with ' +
       `${col('U')} on top and ${col('F')} facing you. Which color is on the <b>right</b> side?</div>`;
@@ -522,7 +584,7 @@ function updateValidation() {
   }
   const solveBtn = $('solve');
   if (state.phase === 'scan' && !pendingSolve) {
-    solveBtn.disabled = !v.ok || state.askSide || state.facelets === SOLVED;
+    solveBtn.disabled = !v.ok || state.askSide || state.askArrangement || state.facelets === SOLVED;
     solveBtn.textContent = solverReady ? 'Solve it' : 'Solve it (solver loading…)';
   }
 }
@@ -667,6 +729,19 @@ window.addEventListener('keydown', (e) => {
     capture();
   }
 });
+
+loadOpenCV().then(
+  (cv) => {
+    scanner.cv = cv;
+    $('vision-status').textContent = 'Face finder ready';
+    $('vision-status').classList.add('ready');
+    renderInstruction();
+  },
+  (err) => {
+    console.error('OpenCV failed to load', err);
+    $('vision-status').textContent = 'Face finder unavailable (using the square)';
+  },
+);
 
 cube.controls.autoRotateSpeed = 1.5;
 cube.viewFace(null);

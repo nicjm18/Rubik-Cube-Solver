@@ -37,13 +37,16 @@ const permutations = (a) =>
 
 /**
  * grids: 6 arrays of 9 color classes (0..5), where grid k's center has class k.
- * Returns { gridAt: {U: gridIndex, ...}, rotation: {U: quarterTurns, ...}, facelets, score, valid }.
- * score counts pieces that make sense (MAX_SCORE when all do); valid means the cube is solvable.
+ * Returns { gridAt: {U: gridIndex, ...}, rotation: {U: quarterTurns, ...}, facelets, score, valid,
+ * alternatives }. score counts pieces that make sense (MAX_SCORE when all do); valid means the cube
+ * is solvable. alternatives lists every valid arrangement (same shape): usually just one, but on rare
+ * cubes a face's stickers happen to fit turned another way too, and only the user can tell which.
  */
 export function assembleFaces(grids) {
   const turned = grids.map((g) => [0, 1, 2, 3].map((r) => rotateGrid(g, r)));
   const others = ['U', 'R', 'D', 'L', 'B']; // F is fixed: first grid, as shown
   let best = null;
+  const alternatives = [];
   const f = new Array(54);
 
   for (const perm of permutations([1, 2, 3, 4, 5])) {
@@ -66,9 +69,11 @@ export function assembleFaces(grids) {
       if (best && score === best.score && score < MAX_SCORE) continue;
       const facelets = f.join('');
       const valid = score === MAX_SCORE && validate(facelets).ok;
-      if (valid) return { gridAt: { ...gridAt }, rotation, facelets, score, valid };
-      if (!best || score > best.score) best = { gridAt: { ...gridAt }, rotation, facelets, score, valid };
+      const found = { gridAt: { ...gridAt }, rotation, facelets, score, valid };
+      if (valid) alternatives.push(found);
+      if (!best || score > best.score) best = found;
     }
   }
-  return best;
+  if (alternatives.length) return { ...alternatives[0], alternatives };
+  return { ...best, alternatives };
 }
